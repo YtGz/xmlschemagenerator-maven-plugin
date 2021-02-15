@@ -16,10 +16,10 @@ package com.actus.aif;
  * limitations under the License.
  */
 
-import com.github.sardine.DavResource;
-import com.github.sardine.Sardine;
-import com.github.sardine.SardineFactory;
 import com.thaiopensource.relaxng.translate.Driver;
+import io.milton.http.exceptions.BadRequestException;
+import io.milton.http.exceptions.NotAuthorizedException;
+import io.milton.httpclient.*;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
@@ -28,23 +28,20 @@ import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 
 import java.io.*;
+import java.io.File;
 import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.stream.Collectors;
 
 /**
  * Maven plugin that grabs XML files from multiple webdav folders and infers a XML schema.
  * Can be used in conjunction with jaxb2-maven-plugin to generate java classes suited for JAXB.
- *
+ * <p>
  * This maven plugin uses the org.relaxng.trang dependency as the underlying XML to XSD converter.
  */
-@Mojo(name="XmlToXsd", defaultPhase = LifecyclePhase.INITIALIZE)
-public class XmlToXsdMojo
-    extends AbstractMojo
-{
+@Mojo(name = "XmlToXsd", defaultPhase = LifecyclePhase.INITIALIZE)
+public class XmlToXsdMojo extends AbstractMojo {
     // TODO: add default mail parameters
 
     /**
@@ -58,6 +55,12 @@ public class XmlToXsdMojo
      */
     @Parameter(required = true)
     private String webdavHostname;
+
+    /**
+     * the root path relative to the hostname (the string must include a leading slash)
+     */
+    @Parameter(required = true)
+    private String webdavRoot;
 
     /**
      * the webdav user
@@ -80,8 +83,11 @@ public class XmlToXsdMojo
     /**
      * This is the overridden method that converts the XML
      * document to an equivalent JSON document
-     * @throws MojoExecutionException - if an unexpected problem occurs. Throwing this exception causes a "BUILD ERROR" message to be displayed.
-     * @throws MojoFailureException - if an expected problem (such as a compilation failure) occurs. Throwing this exception causes a "BUILD FAILURE" message to be displayed.
+     *
+     * @throws MojoExecutionException - if an unexpected problem occurs. Throwing this exception causes a "BUILD
+     *                                ERROR" message to be displayed.
+     * @throws MojoFailureException   - if an expected problem (such as a compilation failure) occurs. Throwing this
+     *                                exception causes a "BUILD FAILURE" message to be displayed.
      */
     public void execute() throws MojoExecutionException, MojoFailureException {
         List<String> filePaths = downloadFiles();
@@ -90,40 +96,65 @@ public class XmlToXsdMojo
 
     private void generateXsdFromXmlFiles(List<String> filePaths) {
         filePaths.add(xsdPath);
-        new Driver().run((String[]) filePaths.toArray());
+        new Driver().run(filePaths.toArray(String[]::new));
     }
 
     private List<String> downloadFiles() throws MojoExecutionException {
-        final Sardine sardine = SardineFactory.begin();
-        sardine.setCredentials(webdavUsername, webdavPassword);
-        sardine.enablePreemptiveAuthentication(webdavHostname,80, 443);
-
-        final List<DavResource> xmlFiles = new ArrayList<>();
-        for(String xmlFolderPath : xmlFolderPaths) {
-            System.out.println(xmlFolderPath);
+        final Host host = new Host(webdavHostname, webdavRoot, 443, webdavUsername, webdavPassword, null, null);
+        host.setSecure(true);
+        final List<io.milton.httpclient.Resource> xmlFiles = new ArrayList<>();
+        for (String xmlFolderPath : xmlFolderPaths) {
             try {
-                System.out.println(sardine.exists(xmlFolderPath));
-                sardine.list(xmlFolderPath);
-                System.out.println("hey!");
-                xmlFiles.addAll(sardine.list(xmlFolderPath).stream().filter(resource -> !(resource.isDirectory() || resource.getName().startsWith(".")) && resource.getContentType().equalsIgnoreCase("application/xml")).collect(Collectors.toUnmodifiableList()));
-            } catch (IOException e) {
+                Folder xmlFolder = host.getFolder(xmlFolderPath);
+                xmlFiles.addAll(xmlFolder
+                                        .children()
+                                        .stream()
+                                        .filter(resource ->
+                                                        !(resource.getClass() == io.milton.httpclient.Folder.class ||
+                                                          resource.name.startsWith(".")) &&
+                                                        ((((io.milton.httpclient.File) resource).contentType != null &&
+                                                          ((io.milton.httpclient.File) resource).contentType.equalsIgnoreCase(
+                                                                  "application/xml")) ||
+                                                         resource.name.endsWith(".xml")))
+                                        .collect(Collectors.toUnmodifiableList()));
+            }
+            catch (IOException | HttpException | NotAuthorizedException | BadRequestException e) {
                 e.printStackTrace();
                 throw new MojoExecutionException("Failed to execute plugin", e);
             }
         }
-        return createTemporaryLocalFiles(sardine, xmlFiles);
+        return createTemporaryLocalFiles(host, xmlFiles);
     }
 
-    private List<String> createTemporaryLocalFiles(Sardine sardine, List<DavResource> webdavResources) {
+    private List<String> createTemporaryLocalFiles(Host host, List<io.milton.httpclient.Resource> webdavResources) {
         List<String> filePaths = new ArrayList<>();
         webdavResources.forEach(webdavResource -> {
             try {
-                InputStream inputStream = sardine.get(webdavResource.getPath()); //.toFile;
-                File tempFile = Files.createTempFile(webdavResource.getName(), ".xml").toFile();
+                File tempFile = Files.createTempFile(webdavResource.name, ".xml").toFile();
                 tempFile.deleteOnExit();
-                Files.copy(inputStream, tempFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                ((io.milton.httpclient.File) webdavResource).downloadToFile(tempFile, new ProgressListener() {
+                    @Override
+                    public void onRead(final int i) {
+                    }
+
+                    @Override
+                    public void onProgress(final long l, final Long aLong, final String s) {
+                        System.out.println("downloading a temporary copy of file : " + s);
+                    }
+
+                    @Override
+                    public void onComplete(final String s) {
+                        System.out.println("downloaded " + s);
+                    }
+
+                    @Override
+                    public boolean isCancelled() {
+                        return false;
+                    }
+                });
                 filePaths.add(tempFile.getAbsolutePath());
-            } catch (IOException ignored) {
+            }
+            catch (IOException | HttpException ignored) {
                 // TODO
             }
         });
