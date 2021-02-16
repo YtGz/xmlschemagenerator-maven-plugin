@@ -48,7 +48,13 @@ public class XmlToXsdMojo extends AbstractMojo {
      * the webdav paths of the folders containing the xml files that the schema shall be generated from
      */
     @Parameter(required = true)
-    private List<String> xmlFolderPaths;
+    private List<String> webdavXmlFolderPaths;
+
+    /**
+     * the device-local paths of the folders containing the xml files that the schema shall be generated from
+     */
+    @Parameter(required = true)
+    private List<String> localXmlFolderPaths;
 
     /**
      * the webdav hostname (domain)
@@ -91,6 +97,7 @@ public class XmlToXsdMojo extends AbstractMojo {
      */
     public void execute() throws MojoExecutionException, MojoFailureException {
         List<String> filePaths = downloadFiles();
+        filePaths.addAll(localXmlFolderPaths);
         generateXsdFromXmlFiles(filePaths);
     }
 
@@ -103,7 +110,7 @@ public class XmlToXsdMojo extends AbstractMojo {
         final Host host = new Host(webdavHostname, webdavRoot, 443, webdavUsername, webdavPassword, null, null);
         host.setSecure(true);
         final List<io.milton.httpclient.Resource> xmlFiles = new ArrayList<>();
-        for (String xmlFolderPath : xmlFolderPaths) {
+        for (String xmlFolderPath : webdavXmlFolderPaths) {
             try {
                 Folder xmlFolder = host.getFolder(xmlFolderPath);
                 xmlFiles.addAll(xmlFolder
