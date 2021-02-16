@@ -54,7 +54,7 @@ public class XmlToXsdMojo extends AbstractMojo {
      * the device-local paths of the folders containing the xml files that the schema shall be generated from
      */
     @Parameter(required = true)
-    private List<String> localXmlFolderPaths;
+    private List<String> localXmlFilePaths;
 
     /**
      * the webdav hostname (domain)
@@ -97,7 +97,7 @@ public class XmlToXsdMojo extends AbstractMojo {
      */
     public void execute() throws MojoExecutionException, MojoFailureException {
         List<String> filePaths = downloadFiles();
-        filePaths.addAll(localXmlFolderPaths);
+        filePaths.addAll(localXmlFilePaths);
         generateXsdFromXmlFiles(filePaths);
     }
 
