@@ -97,7 +97,19 @@ public class XmlToXsdMojo extends AbstractMojo {
      */
     public void execute() throws MojoExecutionException, MojoFailureException {
         List<String> filePaths = downloadFiles();
-        filePaths.addAll(localXmlFilePaths);
+        
+        // Add local XML files if configured
+        if (localXmlFilePaths != null && !localXmlFilePaths.isEmpty()) {
+            getLog().info("Adding " + localXmlFilePaths.size() + " local XML files");
+            filePaths.addAll(localXmlFilePaths);
+        }
+        
+        if (filePaths.isEmpty()) {
+            getLog().warn("No XML files found to process. Please check your WebDAV paths and local XML file paths.");
+            return; // Skip XSD generation if no files are available
+        }
+        
+        getLog().info("Generating XSD from " + filePaths.size() + " XML files");
         generateXsdFromXmlFiles(filePaths);
     }
 
@@ -110,24 +122,67 @@ public class XmlToXsdMojo extends AbstractMojo {
         final Host host = new Host(webdavHostname, webdavRoot, 443, webdavUsername, webdavPassword, null, null);
         host.setSecure(true);
         host.setUsePreemptiveAuth(true);
+        host.setUseDigestForPreemptiveAuth(false); // Force Basic auth instead of Digest
         final List<io.milton.httpclient.Resource> xmlFiles = new ArrayList<>();
         for (String xmlFolderPath : webdavXmlFolderPaths) {
             try {
-                Folder xmlFolder = host.getFolder(xmlFolderPath);
-                xmlFiles.addAll(xmlFolder
-                                        .children()
-                                        .stream()
-                                        .filter(resource ->
-                                                        !(resource.getClass() == io.milton.httpclient.Folder.class ||
-                                                          resource.name.startsWith(".")) &&
-                                                        ((((io.milton.httpclient.File) resource).contentType != null &&
-                                                          ((io.milton.httpclient.File) resource).contentType.equalsIgnoreCase(
-                                                                  "application/xml")) ||
-                                                         resource.name.endsWith(".xml")))
-                                        .collect(Collectors.toUnmodifiableList()));
+                getLog().info("Checking WebDAV folder: " + xmlFolderPath);
+                Folder xmlFolder;
+                try {
+                    xmlFolder = host.getFolder(xmlFolderPath);
+                    if (xmlFolder == null) {
+                        getLog().warn("WebDAV folder not found: " + xmlFolderPath);
+                        continue; // Skip this folder and continue with the next
+                    }
+                } catch (Exception e) {
+                    getLog().error("Error accessing WebDAV folder: " + xmlFolderPath + " - " + e.getMessage());
+                    getLog().info("Skipping folder and continuing...");
+                    continue; // Skip this folder on any error
+                }
+                
+                List<? extends io.milton.httpclient.Resource> children = xmlFolder.children();
+                getLog().info("Found " + children.size() + " items in " + xmlFolderPath);
+                
+                // Debug: log all child resources
+                for (io.milton.httpclient.Resource child : children) {
+                    if (child != null) {
+                        getLog().info("  - Found item: " + child.name + " (" + child.getClass().getSimpleName() + ")");
+                    } else {
+                        getLog().warn("  - Found NULL item");
+                    }
+                }
+                
+                // Create a temporary list that matches the required type
+                List<io.milton.httpclient.Resource> filteredResources = children
+                                .stream()
+                                .filter(resource -> {
+                                    if (resource == null) {
+                                        return false;
+                                    }
+                                    
+                                    // Skip folders and hidden files
+                                    if (resource.getClass() == io.milton.httpclient.Folder.class || 
+                                        resource.name.startsWith(".")) {
+                                        return false;
+                                    }
+                                    
+                                    // Check if it's an XML file
+                                    io.milton.httpclient.File fileResource = (io.milton.httpclient.File) resource;
+                                    if (fileResource.contentType != null && 
+                                        fileResource.contentType.equalsIgnoreCase("application/xml")) {
+                                        return true;
+                                    }
+                                    
+                                    return resource.name.endsWith(".xml");
+                                })
+                                .map(resource -> (io.milton.httpclient.Resource) resource)
+                                .collect(Collectors.toList());
+                                
+                xmlFiles.addAll(filteredResources);
+                getLog().info("Found " + xmlFiles.size() + " XML files to process");
             }
             catch (IOException | HttpException | NotAuthorizedException | BadRequestException e) {
-                e.printStackTrace();
+                getLog().error("Error accessing WebDAV folder: " + xmlFolderPath, e);
                 throw new MojoExecutionException("Failed to execute plugin", e);
             }
         }
@@ -136,10 +191,22 @@ public class XmlToXsdMojo extends AbstractMojo {
 
     private List<String> createTemporaryLocalFiles(Host host, List<io.milton.httpclient.Resource> webdavResources) {
         List<String> filePaths = new ArrayList<>();
+        if (webdavResources.isEmpty()) {
+            getLog().warn("No XML files found to download");
+            return filePaths;
+        }
+        
         webdavResources.forEach(webdavResource -> {
+            if (webdavResource == null) {
+                getLog().warn("Skipping null WebDAV resource");
+                return;
+            }
+            
             try {
+                getLog().info("Downloading file: " + webdavResource.name);
                 File tempFile = Files.createTempFile(webdavResource.name, ".xml").toFile();
                 tempFile.deleteOnExit();
+                
                 ((io.milton.httpclient.File) webdavResource).downloadToFile(tempFile, new ProgressListener() {
                     @Override
                     public void onRead(final int i) {
@@ -147,12 +214,12 @@ public class XmlToXsdMojo extends AbstractMojo {
 
                     @Override
                     public void onProgress(final long l, final Long aLong, final String s) {
-                        System.out.println("downloading a temporary copy of file : " + s);
+                        getLog().info("Downloading a temporary copy of file: " + s + " (" + l + " bytes)");
                     }
 
                     @Override
                     public void onComplete(final String s) {
-                        System.out.println("downloaded " + s);
+                        getLog().info("Downloaded: " + s);
                     }
 
                     @Override
@@ -160,12 +227,16 @@ public class XmlToXsdMojo extends AbstractMojo {
                         return false;
                     }
                 });
+                
                 filePaths.add(tempFile.getAbsolutePath());
+                getLog().info("Added file to processing list: " + tempFile.getAbsolutePath());
             }
-            catch (IOException | HttpException ignored) {
-                // TODO
+            catch (IOException | HttpException e) {
+                getLog().error("Error downloading file: " + webdavResource.name, e);
             }
         });
+        
+        getLog().info("Total files to process: " + filePaths.size());
         return filePaths;
     }
 
