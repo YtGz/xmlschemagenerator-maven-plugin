@@ -109,6 +109,7 @@ public class XmlToXsdMojo extends AbstractMojo {
     private List<String> downloadFiles() throws MojoExecutionException {
         final Host host = new Host(webdavHostname, webdavRoot, 443, webdavUsername, webdavPassword, null, null);
         host.setSecure(true);
+        host.setPreemptiveAuth(true);
         final List<io.milton.httpclient.Resource> xmlFiles = new ArrayList<>();
         for (String xmlFolderPath : webdavXmlFolderPaths) {
             try {
